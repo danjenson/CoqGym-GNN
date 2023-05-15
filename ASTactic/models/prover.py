@@ -10,7 +10,7 @@ from torch_geometric.data import Batch, Data
 from torch_geometric.utils import from_networkx
 
 from .tactic_decoder import TacticDecoder
-from .term_encoder_stackgnn import TermEncoder
+from .term_encoder_diffpool import TermEncoder
 
 sys.path.append(os.path.abspath("."))
 from time import time
