@@ -20,6 +20,7 @@ class Cluster:
 class TermEncoder(nn.Module):
     def __init__(
         self,
+        opts,
         clusters=[
             Cluster(n_nodes=100, n_hops=6, dense=False),
             Cluster(n_nodes=10, n_hops=3, dense=True),
