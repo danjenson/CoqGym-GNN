@@ -9,7 +9,7 @@ from functools import partial
 from inspect import signature
 from itertools import repeat
 from pathlib import Path
-from typing import Callable, Iterable, Optional, Tuple, overload
+from typing import Callable, Iterable, Optional, Tuple, overload, Union
 
 from tqdm import tqdm
 
@@ -25,14 +25,52 @@ __all__ = ["mp_iter_proofs", "mp_iter_libs", "MPSelections"]
 
 
 class MPSelections(dict):
-    def __init__(self, projects=[], libs=[], proofs=[]):
+    def __init__(
+        self,
+        projects: Optional[Union[str, Iterable[str]]] = None,
+        libs: Optional[Union[str, Iterable[str]]] = None,
+        proofs: Optional[Union[str, Iterable[str]]] = None,
+        name: Optional[str] = None,
+    ):
         super().__init__()
-        self["projects"] = projects
-        self["libs"] = libs
-        self["proofs"] = proofs
+        self["projects"] = []
+        self["libs"] = []
+        self["proofs"] = []
+        self.name = name if name is not None else ""
+        if projects is not None:
+            self.add_projects(projects)
+        if libs is not None:
+            self.add_libs(libs)
+        if proofs is not None:
+            self.add_proofs(proofs)
 
     def __repr__(self):
-        return f"MPSelections(projects={self['projects']}, libs={self['libs']}, proofs={self['proofs']})"
+        name = "default" if self.name == "" else self.name
+        return f"MPSelections[{self.name}](projects={self['projects']}, libs={self['libs']}, proofs={self['proofs']})"
+
+    def merge(self, selections: "MPSelections"):
+        self.add_projects(selections["projects"])
+        self.add_libs(selections["libs"])
+        self.add_proofs(selections["proofs"])
+        return self
+
+    def add_projects(self, projects: Union[str, Iterable[str]]):
+        if isinstance(projects, str):
+            projects = [projects]
+        self["projects"].extend(projects)
+        return self
+
+    def add_libs(self, libs: Union[str, Iterable[str]]):
+        if isinstance(libs, str):
+            libs = [libs]
+        self["libs"].extend(libs)
+        return self
+
+    def add_proofs(self, proofs: Union[str, Iterable[str]]):
+        if isinstance(proofs, str):
+            proofs = [proofs]
+        self["proofs"].extend(proofs)
+        return self
 
 
 DEFAULT_FILTERS = MPSelections(

@@ -197,7 +197,7 @@ def evaluate_wrapper(project, filename, _, args, _process_list):
 
     agent = Agent(model, None, None, args)
     try:
-        return agent.evaluate(filename, _process_list=_process_list)
+        return agent.evaluate(filename, args.proof, _process_list=_process_list)
     except Exception as e:
         tqdm.write(f"Error in {filename}", sys.stderr)
         tqdm.write(str(e), sys.stderr)
@@ -214,8 +214,12 @@ def project_level_aggregation_wrapper(file_results):
 
 
 def main(args):
-    filters = MPSelections([args.filter])
-    skips = MPSelections(args.skip_projects, args.skip_libs)
+    filters = MPSelections(name="filters")
+    skips = MPSelections(name="skips")
+    if args.filter:
+        filters.add_projects(args.filter)
+    print(filters)
+    print(skips)
 
     # Multiprocess over proofs
     _, proj_level_results = mp_iter_libs(
