@@ -10,10 +10,11 @@ from torch_geometric.data import Batch, Data
 from torch_geometric.utils import from_networkx
 
 from .tactic_decoder import TacticDecoder
-from .term_encoder_stackgnn import TermEncoder
+from .term_encoder import TermEncoder
 
 sys.path.append(os.path.abspath("."))
 from time import time
+
 
 def to_pyg_data(term):
     return Data(x=term["x"], edge_index=term["edge_index"])
