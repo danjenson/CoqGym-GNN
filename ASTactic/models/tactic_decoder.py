@@ -1,12 +1,13 @@
+import math
+import pdb
+import random
+from copy import deepcopy
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
-import random
-import pdb
-from copy import deepcopy
-from tac_grammar import TerminalNode, NonterminalNode
 from lark.lexer import Token
+from tac_grammar import NonterminalNode, TerminalNode
 
 
 class AvgLoss:
@@ -31,8 +32,12 @@ class ContextReader(nn.Module):
         self.linear1 = nn.Linear(
             opts.hidden_dim + opts.term_embedding_dim + 3, opts.hidden_dim
         )
-        self.relu1 = nn.ReLU()
-        self.linear2 = nn.Linear(opts.hidden_dim, 1)
+        self.relu1 = nn.PReLU()
+        self.layer_norm1 = nn.LayerNorm(opts.hidden_dim)
+        self.linear2 = nn.Linear(opts.hidden_dim, opts.hidden_dim)
+        self.relu2 = nn.PReLU()
+        self.layer_norm2 = nn.LayerNorm(opts.hidden_dim)
+        self.linear3 = nn.Linear(opts.hidden_dim, 1)
         self.default_context = torch.zeros(
             self.opts.term_embedding_dim + 3, device=self.opts.device
         )
@@ -47,7 +52,14 @@ class ContextReader(nn.Module):
                 input = torch.cat(
                     [state.unsqueeze(0).expand(embedding.size(0), -1), embedding], dim=1
                 )
-                weights = self.linear2(self.relu1(self.linear1(input)))
+                weights = self.linear1(input)
+                weights = self.relu1(weights)
+                weights = self.layer_norm1(weights)
+                weights = self.linear2(weights)
+                weights = self.relu2(weights)
+                weights = self.layer_norm2(weights)
+                weights = self.linear3(weights)
+                # weights = self.linear2(self.layer_norm(self.relu1(self.linear1(input))))
                 weights = F.softmax(weights, dim=0)
                 context.append(torch.matmul(embedding.t(), weights).squeeze())
         context = torch.stack(context)
@@ -470,7 +482,7 @@ class TacticDecoder(nn.Module):
             for i in range(len(beam)):
                 if i not in indice:
                     normalized_log_likelihood = log_likelihood[i] / (
-                        expansion_step ** self.opts.lens_norm
+                        expansion_step**self.opts.lens_norm
                     )  # length normalization
                     beam[i].traverse_pre(clear_state)
                     complete_trees.append((beam[i], normalized_log_likelihood))
@@ -506,7 +518,7 @@ class TacticDecoder(nn.Module):
                         expansion_step > self.opts.size_limit
                     ):  # end the generation process asap
                         beam_candidates.append(
-                            (idx, log_likelihood[i], applicable_rules[0])
+                            (idx, log_likelihood[idx], applicable_rules[0])
                         )
                     else:
                         logits = torch.matmul(
@@ -529,6 +541,7 @@ class TacticDecoder(nn.Module):
                     else:
                         candidates = local_context["idents"]
                     if candidates == []:
+                        # Choose random quantified identifier from goal
                         candidates = ["H"] + goal["quantified_idents"]
                         log_cond_prob = -math.log(len(candidates))
                         for cand in candidates:

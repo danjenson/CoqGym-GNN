@@ -1,0 +1,7 @@
+numpy==1.16.2
+lark-parser==0.6.5
+lmdb==0.94
+pandas==0.24.2
+pexpect==4.6.0
+progressbar2==3.39.3
+sexpdata==0.0.3

@@ -54,6 +54,7 @@ class GallinaTermParser:
                 ident = node.children[0].children[0].value
                 if ident.startswith('"') and ident.endswith('"'):
                     ident = ident[1:-1]
+                node.children[0].ident = ident
                 ast.quantified_idents.add(ident)
 
         traverse_postorder(ast, get_quantified_idents)

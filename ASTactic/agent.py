@@ -1,6 +1,7 @@
 import torch
 import torch.nn.functional as F
 import os
+import sys
 from gallina import GallinaTermParser
 from utils import SexpCache, log
 from eval_env import FileEnv
@@ -14,7 +15,10 @@ import pdb
 from hashlib import sha1
 import gc
 from copy import deepcopy
+from tqdm import tqdm
 from time import time
+
+from models.gnn_utils import create_edge_index, create_x
 
 
 def action_seq_loss(logits_batch, actions_batch, opts):
@@ -40,19 +44,43 @@ def filter_env(env):
     ]
     for const in toplevel_consts[-10:]:
         ast = sexp_cache[const["sexp"]]
-        filtered_env.append({"qualid": const["qualid"], "ast": term_parser.parse(ast)})
+        env_ast = term_parser.parse(ast)
+        filtered_env.append(
+            {
+                "qualid": const["qualid"],
+                "ast": env_ast,
+                "x": create_x(env_ast)[0],
+                "edge_index": create_edge_index(env_ast),
+            }
+        )
     return filtered_env
 
 
 def parse_goal(g):
-    goal = {"id": g["id"], "text": g["type"], "ast": term_parser.parse(g["sexp"])}
+    goal_ast = term_parser.parse(g["sexp"])
+    x, idents = create_x(goal_ast)
+    goal = {
+        "id": g["id"],
+        "text": g["type"],
+        "ast": goal_ast,
+        "x": x,
+        "idents": idents,
+        "edge_index": create_edge_index(goal_ast),
+    }
     local_context = []
     for i, h in enumerate(g["hypotheses"]):
         for ident in h["idents"]:
+            context_ast = term_parser.parse(h["sexp"])
             local_context.append(
-                {"ident": ident, "text": h["type"], "ast": term_parser.parse(h["sexp"])}
+                {
+                    "ident": ident,
+                    "text": h["type"],
+                    "ast": context_ast,
+                    "x": create_x(context_ast)[0],
+                    "edge_index": create_edge_index(context_ast),
+                }
             )
-    return local_context, goal["ast"]
+    return local_context, goal
 
 
 def print_single_goal(g):
@@ -101,12 +129,10 @@ class Agent:
 
         bar = ProgressBar(max_value=len(self.dataloader["train"]))
         for i, data_batch in enumerate(self.dataloader["train"]):
+            data_batch.to(self.opts.device)  # send batch to device
             use_teacher_forcing = random() < self.opts.teacher_forcing
             asts, loss = self.model(
-                data_batch["env"],
-                data_batch["local_context"],
-                data_batch["goal"],
-                data_batch["tactic_actions"],
+                data_batch,
                 use_teacher_forcing,
             )
             log(
@@ -132,13 +158,8 @@ class Agent:
         bar = ProgressBar(max_value=len(self.dataloader["valid"]))
 
         for i, data_batch in enumerate(self.dataloader["valid"]):
-            asts, loss = self.model(
-                data_batch["env"],
-                data_batch["local_context"],
-                data_batch["goal"],
-                data_batch["tactic_actions"],
-                False,
-            )
+            data_batch.to(self.opts.device)  # send batch to device
+            asts, loss = self.model(data_batch, False)
             loss_avg += loss.item()
 
             for n in range(len(data_batch["file"])):
@@ -176,7 +197,7 @@ class Agent:
         log("validation accuracy: %f" % acc)
         return loss_avg
 
-    def evaluate(self, filename, proof_name=None):
+    def evaluate(self, filename, proof_name=None, _process_list=[os.getpid()]):
         if self.model is not None:
             self.model.eval()
 
@@ -198,7 +219,7 @@ class Agent:
             if "ours" in self.opts.method
             else self.opts.timeout
         )
-
+        id = _process_list.index(os.getpid())
         with FileEnv(
             filename,
             self.opts.max_num_tactics,
@@ -207,30 +228,66 @@ class Agent:
             hammer_timeout=hammer_timeout,
         ) as file_env:
             results = []
-            for proof_env in file_env:  # start a proof
-                if proof_name is not None and proof_env.proof["name"] != proof_name:
-                    continue
-                print("proof: ", proof_env.proof["name"])
-                # print('cuda memory allocated before proof: ', torch.cuda.memory_allocated(self.opts.device), file=sys.stderr)
-                success, proof_pred, time, num_tactics = self.prove(proof_env)
-                results.append(
-                    {
-                        "filename": filename,
-                        "proof_name": proof_env.proof["name"],
-                        "success": success,
-                        "proof_gt": [
-                            step["command"][0]
-                            for step in proof_env.proof["steps"]
-                            if step["command"][1] != "VernacEndProof"
-                        ],
-                        "proof_pred": proof_pred,
-                        "time": time,
-                        "num_tactics": num_tactics,
-                    }
-                )
-                if proof_name is not None:
-                    break
-        return results
+            errors = []
+            for proof_env in tqdm(
+                file_env, position=id + 1, desc=filename, leave=False
+            ):  # start a proof
+                try:
+                    if (
+                        proof_name is not None and proof_env.proof["name"] != proof_name
+                    ) or proof_env.proof["name"] in self.opts.skip_proofs:
+                        continue
+                    print("proof: ", proof_env.proof["name"])
+                    # print('cuda memory allocated before proof: ', torch.cuda.memory_allocated(self.opts.device), file=sys.stderr)
+                    success, proof_pred, time, num_tactics = self.prove(proof_env)
+                    results.append(
+                        {
+                            "filename": filename,
+                            "proof_name": proof_env.proof["name"],
+                            "success": success,
+                            "proof_gt": [
+                                step["command"][0]
+                                for step in proof_env.proof["steps"]
+                                if step["command"][1] != "VernacEndProof"
+                            ],
+                            "proof_pred": proof_pred,
+                            "time": time,
+                            "num_tactics": num_tactics,
+                        }
+                    )
+                    if proof_name is not None:
+                        break
+                except Exception as e:
+                    tqdm.write(
+                        f"error in {filename}::{proof_env.proof['name']}: {e}",
+                        sys.stderr,
+                    )
+                    results.append(
+                        {
+                            "filename": filename,
+                            "proof_name": proof_env.proof["name"],
+                            "success": False,
+                            "proof_gt": [
+                                step["command"][0]
+                                for step in proof_env.proof["steps"]
+                                if step["command"][1] != "VernacEndProof"
+                            ],
+                            "proof_pred": [],
+                            "time": self.opts.timeout,
+                            "num_tactics": 0,
+                        }
+                    )
+                    # Save log of error
+                    errors.append(
+                        {
+                            "filename": filename,
+                            "proof_name": proof_env.proof["name"],
+                            "error": str(e),
+                        }
+                    )
+                del proof_env
+                gc.collect()
+        return results, errors
 
     def prove_one_tactic(self, proof_env, tac):
         obs = proof_env.init()
@@ -283,8 +340,8 @@ class Agent:
                 tac = stack[-1].pop()
 
             obs = proof_env.step(tac)
-            print(obs["result"])
-            print_goals(obs)
+            # print(obs["result"])
+            # print_goals(obs)
 
             if obs["result"] == "SUCCESS":
                 script.append(tac)

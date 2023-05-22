@@ -1,15 +1,23 @@
+import os
+import pdb
+import sys
+from itertools import chain
+
 import torch
 import torch.nn as nn
 from tac_grammar import CFG
+from torch_geometric.data import Batch, Data
+from torch_geometric.utils import from_networkx
+
 from .tactic_decoder import TacticDecoder
 from .term_encoder import TermEncoder
-import pdb
-import os
-from itertools import chain
-import sys
 
 sys.path.append(os.path.abspath("."))
 from time import time
+
+
+def to_pyg_data(term):
+    return Data(x=term["x"], edge_index=term["edge_index"])
 
 
 class Prover(nn.Module):
@@ -19,26 +27,27 @@ class Prover(nn.Module):
         self.tactic_decoder = TacticDecoder(CFG(opts.tac_grammar, "tactic_expr"), opts)
         self.term_encoder = TermEncoder(opts)
 
-    def embed_terms(self, environment, local_context, goal):
-        all_asts = list(
-            chain(
-                [env["ast"] for env in chain(*environment)],
-                [context["ast"] for context in chain(*local_context)],
-                goal,
-            )
-        )
-        all_embeddings = self.term_encoder(all_asts)
-
-        batchsize = len(environment)
+    def embed_terms(self, batch):
         environment_embeddings = []
+        context_embeddings = []
+        goal_embeddings = []
+
+        # generate embeddings
+        embeddings = self.term_encoder(batch.to(self.opts.device))
+        torch.cuda.empty_cache()
+
+        # separate into environment, context, and goal
         j = 0
-        for n in range(batchsize):
+        environment = batch["env"]
+        local_context = batch["local_context"]
+
+        for n in range(len(batch)):
             size = len(environment[n])
             environment_embeddings.append(
                 torch.cat(
                     [
                         torch.zeros(size, 3, device=self.opts.device),
-                        all_embeddings[j : j + size],
+                        embeddings[j : j + size],
                     ],
                     dim=1,
                 )
@@ -46,14 +55,12 @@ class Prover(nn.Module):
             environment_embeddings[-1][:, 0] = 1.0
             j += size
 
-        context_embeddings = []
-        for n in range(batchsize):
             size = len(local_context[n])
             context_embeddings.append(
                 torch.cat(
                     [
                         torch.zeros(size, 3, device=self.opts.device),
-                        all_embeddings[j : j + size],
+                        embeddings[j : j + size],
                     ],
                     dim=1,
                 )
@@ -61,11 +68,9 @@ class Prover(nn.Module):
             context_embeddings[-1][:, 1] = 1.0
             j += size
 
-        goal_embeddings = []
-        for n in range(batchsize):
             goal_embeddings.append(
                 torch.cat(
-                    [torch.zeros(3, device=self.opts.device), all_embeddings[j]], dim=0
+                    [torch.zeros(3, device=self.opts.device), embeddings[j]], dim=0
                 )
             )
             goal_embeddings[-1][2] = 1.0
@@ -74,9 +79,14 @@ class Prover(nn.Module):
 
         return environment_embeddings, context_embeddings, goal_embeddings
 
-    def forward(self, environment, local_context, goal, actions, teacher_forcing):
+    # def forward(self, environment, local_context, goal, actions, teacher_forcing):
+    def forward(self, batch, teacher_forcing):
+        environment = batch["env"]
+        local_context = batch["local_context"]
+        goal = batch["goal"]
+        actions = batch["tactic_actions"]
         environment_embeddings, context_embeddings, goal_embeddings = self.embed_terms(
-            environment, local_context, goal
+            batch
         )
         environment = [
             {
@@ -96,7 +106,7 @@ class Prover(nn.Module):
         ]
         goal = {
             "embeddings": goal_embeddings,
-            "quantified_idents": [g.quantified_idents for g in goal],
+            "quantified_idents": [g["ast"].quantified_idents for g in goal],
         }
         asts, loss = self.tactic_decoder(
             environment, local_context, goal, actions, teacher_forcing
@@ -104,8 +114,25 @@ class Prover(nn.Module):
         return asts, loss
 
     def beam_search(self, environment, local_context, goal):
+        # need to add the G_step to this method call
+        proof_step = {
+            "env": environment,
+            "local_context": local_context,
+            "goal": goal,
+        }
+        Gs = []
+        for env in proof_step["env"]:
+            Gs.append(to_pyg_data(env))
+        for lc in proof_step["local_context"]:
+            Gs.append(to_pyg_data(lc))
+        Gs.append(to_pyg_data(proof_step["goal"]))
+        B = Batch.from_data_list(Gs)
+        for k, v in proof_step.items():
+            if k not in ["x", "edge_index"]:
+                B[k] = v
+        batch = Batch.from_data_list([B])
         environment_embeddings, context_embeddings, goal_embeddings = self.embed_terms(
-            [environment], [local_context], [goal]
+            batch
         )
         environment = {
             "idents": [v["qualid"] for v in environment],
@@ -119,7 +146,7 @@ class Prover(nn.Module):
         }
         goal = {
             "embeddings": goal_embeddings,
-            "quantified_idents": goal.quantified_idents,
+            "quantified_idents": goal["ast"].quantified_idents,
         }
         asts = self.tactic_decoder.beam_search(environment, local_context, goal)
         return asts

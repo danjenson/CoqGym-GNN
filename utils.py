@@ -223,6 +223,7 @@ def iter_proofs(
     callback,
     include_synthetic: bool = False,
     show_progress: bool = False,
+    filter_file: Callable[[str], bool]=lambda f: True,
 ) -> None:
     def iter_proofs_in_file(filename, file_data):
         env = {"constants": [], "inductives": []}
@@ -240,13 +241,14 @@ def iter_proofs(
                     subprf_data["env"] = env
                     callback(filename, subprf_data)
 
-    iter_coq_files(data_root, iter_proofs_in_file, show_progress)
+    iter_coq_files(data_root, iter_proofs_in_file, show_progress, filter_file)
 
 
-def iter_coq_files(data_root: str, callback, show_progress: bool = False) -> None:
+def iter_coq_files(data_root: str, callback, show_progress: bool = False, filter_file: Callable[[str], bool]=lambda f: True) -> None:
     coq_files = glob(os.path.join(data_root, "**/*.json"), recursive=True)
     bar = ProgressBar(max_value=len(coq_files))
     for i, f in enumerate(coq_files):
+        if not filter_file(f): continue # Skip files that do not pass filter
         file_data = json.load(open(f))
         callback(f, file_data)
         if show_progress:

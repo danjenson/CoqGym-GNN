@@ -6,8 +6,9 @@ import numpy as np
 import random
 import json
 import sys
+import pandas as pd
 
-sys.path.append(os.path.sep.join(__file__.split(os.path.sep)[:-2]))
+sys.path.append(os.path.sep.join(os.path.abspath(__file__).split(os.path.sep)[:-2]))
 from utils import log
 import pdb
 
@@ -22,6 +23,7 @@ def parse_args():
     parser.add_argument("--datapath", type=str, default="proof_steps/")
     parser.add_argument("--projs_split", type=str, default="../projs_split.json")
     parser.add_argument("--num_epochs", type=int, default=4)
+    parser.add_argument("--encoder_model", type=str, default="treelstm", help="treelstm or gnn, defines the encoder network used.")
     parser.add_argument("--resume", type=str, help="the model checkpoint to resume")
     parser.add_argument(
         "--no_validation", action="store_true", help="no validation is performed"
@@ -40,7 +42,12 @@ def parse_args():
     parser.add_argument("--filter", type=str)
 
     # term encoder
+    parser.add_argument("--model_type", type=str, default="GraphSage")
+    parser.add_argument("--dropout", type=int, default=0.5)
+    parser.add_argument("--num_layers", type=int, default=2)  # HOList: 12-hop GNN encoder
+    parser.add_argument("--heads", type=int, default=1)
     parser.add_argument("--term_embedding_dim", type=int, default=256)
+    parser.add_argument("--nonterminals_feature_dim", type=int, default=32)
 
     # tactic decoder
     parser.add_argument("--size_limit", type=int, default=50)
@@ -77,6 +84,11 @@ def parse_args():
                                                              (only applicable when no_validation == True)",
     )
 
+    # Skip proofs
+    parser.add_argument("--skip", type=str, default="")
+
+    parser.add_argument("--device", type=str, default="")
+
     opts = parser.parse_args()
 
     torch.manual_seed(opts.seed)
@@ -94,13 +106,28 @@ def parse_args():
         os.makedirs(os.path.join(opts.log_dir, "predictions"))
         os.makedirs(opts.checkpoint_dir)
 
-    opts.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if opts.device not in ["cuda", "cpu"]:
+        opts.device = "cuda" if torch.cuda.is_available() else "cpu"
+    opts.device = torch.device(opts.device)
     if opts.device.type == "cpu":
         log("using CPU", "WARNING")
 
     if (not opts.no_validation) and (opts.lr_reduce_steps is not None):
         log("--lr_reduce_steps is applicable only when no_validation == True", "ERROR")
 
+    # Skip option field validation
+    # NOTE: skip libs does not work on training due to data naming convention
+    opts.skip_projects = []
+    opts.skip_libs = []
+    opts.skip_proofs = []
+    if opts.skip and os.path.exists(opts.skip):
+        skip_df = pd.read_csv(opts.skip)
+        if any(field not in skip_df for field in ["project", "lib", "proof"]):
+            log("Invalid skip csv, skipping nothing. Requires columns: project, lib, proof", "WARNING")
+        else:
+            opts.skip_projects = skip_df[skip_df["project"].notnull()]["project"].to_list()
+            opts.skip_libs = skip_df[skip_df["lib"].notnull()]["lib"].to_list()
+            opts.skip_proofs = skip_df[skip_df["proof"].notnull()]["proof"].to_list()
     log(opts)
     return opts
 

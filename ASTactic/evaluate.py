@@ -1,3 +1,4 @@
+from fileinput import filename
 import torch
 import numpy as np
 import random
@@ -6,6 +7,7 @@ import argparse
 import json
 import os
 import sys
+import pandas as pd
 
 sys.setrecursionlimit(100000)
 sys.path.append(os.path.normpath(os.path.dirname(os.path.realpath(__file__))))
@@ -63,10 +65,25 @@ if __name__ == "__main__":
     parser.add_argument(
         "--hidden_dim", type=int, default=256, help="dimension of the LSTM controller"
     )
+
+    # term encoder
+    parser.add_argument("--model_type", type=str, default="GraphSage")
+    parser.add_argument("--dropout", type=int, default=0.5)
+    parser.add_argument("--num_layers", type=int, default=2)
+    parser.add_argument("--heads", type=int, default=1)
+    parser.add_argument("--nonterminals_feature_dim", type=int, default=32)
+
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--device", type=str, default="")
+
+    # Skip proofs
+    parser.add_argument("--skip", type=str, default="")
+
     opts = parser.parse_args()
+    if opts.device not in ["cuda", "cpu"]:
+        opts.device = "cuda" if torch.cuda.is_available() else "cpu"
+    opts.device = torch.device(opts.device)
     log(opts)
-    opts.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if opts.device.type == "cpu":
         log("using CPU", "WARNING")
 
@@ -100,49 +117,82 @@ if __name__ == "__main__":
                 glob(os.path.join(opts.datapath, "%s/**/*.json" % proj), recursive=True)
             )
 
-    if opts.filter:
-        files = [
-            f
-            for f in files
-            if md5(f.encode("utf-8")).hexdigest().startswith(opts.filter)
-        ]
+    # Skip option field validation
+    skip_projects = []
+    skip_libs = []
+    opts.skip_proofs = []
+    if opts.skip and os.path.exists(opts.skip):
+        skip_df = pd.read_csv(opts.skip)
+        if any(field not in skip_df for field in ["project", "lib", "proof"]):
+            log(
+                "Invalid skip csv, skipping nothing. Requires columns: project, lib, proof",
+                "WARNING",
+            )
+        else:
+            skip_projects = skip_df[skip_df["project"].notnull()]["project"].to_list()
+            skip_libs = skip_df[skip_df["lib"].notnull()]["lib"].to_list()
+            opts.skip_proofs = skip_df[skip_df["proof"].notnull()]["proof"].to_list()
+
+    files = [
+        f
+        for f in files
+        if (opts.filter and opts.filter == f.split(os.path.sep)[2])
+        and (f.split(os.path.sep)[2] not in skip_projects)
+        and (f.split(os.path.sep)[-1] not in skip_libs)
+    ]
 
     print(files)
     results = []
+    errors = []
     bar = ProgressBar(max_value=len(files))
     for i, f in enumerate(files):
         print("file: ", f)
         # print('cuda memory allocated before file: ', torch.cuda.memory_allocated(opts.device), file=sys.stderr)
-        results.extend(agent.evaluate(f, opts.proof))
+        r, e = agent.evaluate(f, opts.proof)
+        results.extend(r)
+        errors.extend(e)
         bar.update(i)
 
     oup_dir = os.path.join(opts.output_dir, opts.eval_id)
+    err_dir = os.path.join(oup_dir, "errors")
     if not os.path.exists(oup_dir):
         os.makedirs(oup_dir)
-    if opts.filter is None and opts.file is None:
+    if not os.path.exists(err_dir):
+        os.mkdir(err_dir)
+    if (
+        opts.filter is None
+        and opts.file is None
+        and not skip_projects
+        and not skip_libs
+    ):
         oup_file = os.path.join(oup_dir, "results.json")
-    elif opts.file is None:
-        oup_file = os.path.join(oup_dir, "%s.json" % opts.filter)
-    elif opts.proof is None:
-        oup_file = os.path.join(
-            oup_dir,
-            "%s.json"
-            % os.path.sep.join(opts.file.split(os.path.sep)[2:]).replace(
-                os.path.sep, "-"
-            ),
-        )
-    else:
-        oup_file = os.path.join(
-            oup_dir,
-            "%s-%s.json"
-            % (
+        err_file = os.path.join(err_dir, "errors.json")
+    else:  # Same file names
+        if opts.file is None:
+            file_name = "%s" % opts.filter
+        elif opts.proof is None:
+            file_name = (
+                "%s"
+                % os.path.sep.join(opts.file.split(os.path.sep)[2:]).replace(
+                    os.path.sep, "-"
+                )[:-5]
+            )
+        else:
+            file_name = "%s-%s" % (
                 os.path.sep.join(opts.file.split(os.path.sep)[2:]).replace(
                     os.path.sep, "-"
-                ),
+                )[:-5],
                 opts.proof,
-            ),
-        )
+            )
+        if opts.skip:
+            file_name += f"-{opts.skip.split(os.path.sep)[-1].split('.')[0]}"
+        file_name += ".json"
+        oup_file = os.path.join(oup_dir, file_name)
+        err_file = os.path.join(err_dir, file_name)
     opts = vars(opts)
     del opts["device"]
     json.dump({"options": opts, "results": results}, open(oup_file, "wt"))
     log("\nResults saved to " + oup_file)
+    if errors:
+        json.dump(errors, open(err_file, "wt"))
+        log("Errors saved to " + err_file)
