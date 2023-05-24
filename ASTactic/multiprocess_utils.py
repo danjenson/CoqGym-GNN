@@ -416,6 +416,12 @@ if __name__ == "__main__":
         time.sleep(0.1)
         return p["name"]
 
+    def sum_proofs(_, j, p, *args, **kwargs):
+        return len(p)
+
+    def sum_values(lib_dict: dict):
+        return sum(v for v in lib_dict.values())
+
     filter = {
         "projects": [
             "twoSquare",
@@ -431,5 +437,10 @@ if __name__ == "__main__":
     }
     kwargs = {"a": 1, "b": 2}
     # mp_iter_proofs(print_name, filters=filter)
-    result = mp_iter_proofs(print_name, kwargs=kwargs, filters=filter, n_cpu=6)
-    print(result)
+    # result = mp_iter_proofs(print_name, kwargs=kwargs, filters=filter, n_cpu=6)
+    _, project_results = mp_iter_libs(
+        sum_proofs, [], {}, sum_values, [], {}, split="test"
+    )
+    print(sum_values(project_results))
+    print(project_results)
+    print(len(project_results))
